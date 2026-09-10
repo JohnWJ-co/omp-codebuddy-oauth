@@ -1,0 +1,45 @@
+{
+  "name": "omp-codebuddy-oauth",
+  "version": "1.0.0",
+  "description": "omp extension that registers CodeBuddy (IOA) as an OpenAI-compatible HTTP provider with OAuth/API-key auth",
+  "license": "MIT",
+  "type": "module",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "omp-plugin",
+    "extension",
+    "codebuddy",
+    "ioa",
+    "oauth",
+    "provider",
+    "omp"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JohnWJ-co/omp-codebuddy-oauth.git"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "*",
+    "@oh-my-pi/pi-ai": "*"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "18.1.16",
+    "@oh-my-pi/pi-ai": "18.1.16",
+    "@types/node": "^26.4.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
