@@ -283,11 +283,26 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
     void discoverWithFailover();
   }
   pi.registerCommand("codebuddy-accounts", {
-    description: "管理 CodeBuddy 多账号（list / add / remove <id>）",
+    description: "管理 CodeBuddy 多账号（list / add / strategy / remove <id>）",
     handler: async (args: string, ctx: any) => {
       const argv = args.trim().split(/\s+/).filter(Boolean);
       const cmd = argv[0] ?? "list";
       if (cmd === "add") { await runAddAccount(ctx); return; }
+      if (cmd === "strategy") {
+        const val = argv[1];
+        if (!val) {
+          commandOut(ctx, `当前调度策略：${pool.getStrategy()}。failover=仅 429/401 时切换；round-robin=请求间轮转。切换：/codebuddy-accounts strategy <failover|round-robin>`);
+          return;
+        }
+        const v = val.toLowerCase();
+        if (v !== "failover" && v !== "round-robin") {
+          commandOut(ctx, "用法：/codebuddy-accounts strategy [failover|round-robin]");
+          return;
+        }
+        await pool.setStrategy(v as "round-robin" | "failover");
+        commandOut(ctx, `调度策略已切换为 ${v}（已持久化，无需重启）`);
+        return;
+      }
       if (cmd === "remove") {
         const id = argv[1];
         if (!id) { commandOut(ctx, "usage: /codebuddy-accounts remove <id>"); return; }

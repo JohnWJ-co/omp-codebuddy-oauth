@@ -60,7 +60,7 @@ omp plugin link /path/to/omp-codebuddy-oauth
 
 ### `/codebuddy-accounts` —— 账号池管理
 
-插件的多账号管理命令，支持三个子命令。
+插件的多账号管理命令，支持四个子命令。
 
 #### `/codebuddy-accounts`（无参数）—— 查看账号列表与状态
 
@@ -89,6 +89,20 @@ codebuddy 账号 (3/3 可用)
 4. 成功提示：`已添加 codebuddy 账号 账号N (acct-N)`
 5. 登录超时（5 分钟未完成）会提示失败，重试即可
 
+#### `/codebuddy-accounts strategy [failover|round-robin]` —— 调度策略查看/切换
+
+- **不带参数**：查看当前调度策略：
+  ```
+  /codebuddy-accounts strategy
+  → 当前调度策略：failover。failover=仅 429/401 时切换；round-robin=请求间轮转。切换：/codebuddy-accounts strategy <failover|round-robin>
+  ```
+- **带参数**：运行时切换并**持久化**（写入账号池文件，无需改环境变量、无需重启）：
+  ```
+  /codebuddy-accounts strategy round-robin
+  → 调度策略已切换为 round-robin（已持久化，无需重启）
+  ```
+- 非法参数会提示用法。持久化的策略优先于 `CODEBUDDY_STRATEGY` 环境变量（env 仅作为首次默认）。
+
 #### `/codebuddy-accounts remove <id>` —— 删除账号
 
 按列表中的 id 删除（如 `/codebuddy-accounts remove acct-2`）：
@@ -114,6 +128,7 @@ codebuddy 账号「账号名」（id=acct-3）认证失效：refresh failed。
 
 - **failover（默认，`CODEBUDDY_STRATEGY=failover`）**：优先使用顺序靠前的可用账号；当前账号 **429** → 短冷却并顺延；**401/403** 刷新失败 → 标记失效并顺延。
 - **round-robin（`CODEBUDDY_STRATEGY=round-robin`）**：每次请求从下一账号开始（请求间轮转），遇故障同样顺延。
+- 策略可在运行时用 `/codebuddy-accounts strategy` 切换并持久化，无需重启。
 - 冷却窗口默认 60s（`CODEBUDDY_ACCOUNT_COOLDOWN_MS` 可调）；单请求最多顺延 `CODEBUDDY_MAX_ACCOUNT_RETRIES` 个账号（默认 0 = 账号数 - 1 自动）。
 - 全部账号不可用时，回退到第一个未尝试账号再试一次，避免彻底不可用。
 
@@ -125,7 +140,7 @@ codebuddy 账号「账号名」（id=acct-3）认证失效：refresh failed。
 | `CODEBUDDY_NETWORK` | `internal` | `internal`/`ioa` → 国内端点；其他 → 国际端点 |
 | `CODEBUDDY_AUTH` | `auto` | `auto` / `oauth` / `api` |
 | `CODEBUDDY_API_KEY` | _(空)_ | API Key（`ck_xxx`），`auto` 模式下隐含启用 API Key 模式 |
-| `CODEBUDDY_STRATEGY` | `failover` | 多账号调度：`failover`（429/401 才切换）/ `round-robin`（请求间轮转） |
+| `CODEBUDDY_STRATEGY` | `failover` | 多账号调度首次默认：`failover`（429/401 才切换）/ `round-robin`（请求间轮转）；可用 `/codebuddy-accounts strategy` 运行时切换并持久化（持久化值优先） |
 | `CODEBUDDY_ACCOUNT_COOLDOWN_MS` | `60000` | 429/401 后账号短冷却窗口（毫秒） |
 | `CODEBUDDY_MAX_ACCOUNT_RETRIES` | `0` | 单请求最多额外尝试的账号数；`0` = 账号数-1 自动 |
 | `CODEBUDDY_ACCOUNTS_FILE` | `~/.omp/agent/codebuddy-accounts.json` | 多账号池文件路径（写权限 0600） |

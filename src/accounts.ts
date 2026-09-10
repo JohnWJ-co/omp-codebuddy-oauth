@@ -37,6 +37,7 @@ export interface AccountPoolOptions {
 
 interface AccountsFileShape {
   cursor?: number;
+  strategy?: "round-robin" | "failover";
   accounts?: AccountRecord[];
 }
 
@@ -44,14 +45,27 @@ export class AccountPool {
   private accounts: AccountRecord[] = [];
   private cursor = 0;
   private notifiedInvalid = new Set<string>();
+  private strategy: "round-robin" | "failover";
   private readonly opts: AccountPoolOptions;
 
   constructor(opts: AccountPoolOptions) {
     this.opts = opts;
+    // 默认取构造入参（来自 env CODEBUDDY_STRATEGY）；文件内持久化的 strategy 在 load() 时覆盖
+    this.strategy = opts.strategy;
   }
 
   size(): number {
     return this.accounts.length;
+  }
+
+  getStrategy(): "round-robin" | "failover" {
+    return this.strategy;
+  }
+
+  /** 运行时切换调度策略并持久化（无需重启） */
+  async setStrategy(s: "round-robin" | "failover"): Promise<void> {
+    this.strategy = s;
+    await this.save();
   }
 
   async load(): Promise<void> {
@@ -71,6 +85,7 @@ export class AccountPool {
         this.accounts = [];
       }
       this.cursor = Number.isInteger(o.cursor) && (o.cursor as number) >= 0 ? (o.cursor as number) : 0;
+      if (o.strategy === "round-robin" || o.strategy === "failover") this.strategy = o.strategy;
     } catch {
       this.accounts = [];
       this.cursor = 0;
@@ -80,7 +95,7 @@ export class AccountPool {
   async save(): Promise<void> {
     try {
       await fs.mkdir(dirname(this.opts.filePath), { recursive: true });
-      const payload = JSON.stringify({ cursor: this.cursor, accounts: this.accounts }, null, 2);
+      const payload = JSON.stringify({ cursor: this.cursor, strategy: this.strategy, accounts: this.accounts }, null, 2);
       await fs.writeFile(this.opts.filePath, payload, { encoding: "utf8", mode: 0o600 });
     } catch (e) {
       this.opts.logger?.error(`accounts save failed: ${(e as Error).message}`);
@@ -218,7 +233,7 @@ export class AccountPool {
   }
 
   private orderedCandidates(tried: Set<string>): AccountRecord[] {
-    if (this.opts.strategy === "failover") {
+    if (this.strategy === "failover") {
       return [...this.accounts];
     }
     if (this.accounts.length === 0) return [];
