@@ -168,15 +168,21 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
       try {
         const remote = await discoveryCache.get(pick.auth.access, { signal: undefined });
         const models = modelsFromRemote(remote);
-        if (!models.length) return;
+        if (!models.length) { logger.warn(`model discovery empty via ${pick.id}`); return; }
         registeredModels = models;
-        register(models);
+        try {
+          register(models);
+        } catch (regErr) {
+          logger.error(`registerProvider failed: ${(regErr as Error).message}`);
+          return;
+        }
+        logger.info(`model discovery ok via ${pick.id}: ${models.length} models registered`);
         return;
       } catch (e) {
         const status = (e as any)?.status;
-        if (status === 429) { await pool.markCooldown(pick.id); continue; }
-        if (status === 401 || status === 403) { await pool.markInvalid(pick.id, "discovery auth rejected"); continue; }
-        logger.warn(`model discovery failed: ${(e as Error).message}`);
+        if (status === 429) { logger.warn(`model discovery 429 on ${pick.id}, cooldown`); await pool.markCooldown(pick.id); continue; }
+        if (status === 401 || status === 403) { logger.warn(`model discovery 401/403 on ${pick.id}, invalid`); await pool.markInvalid(pick.id, "discovery auth rejected"); continue; }
+        logger.warn(`model discovery failed via ${pick.id}: ${(e as Error).message}${(e as any)?.status ? ` (status=${(e as any).status})` : ""}`);
         return;
       }
     }
