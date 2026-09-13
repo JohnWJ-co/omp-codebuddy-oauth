@@ -190,6 +190,14 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
     logger.warn("all accounts failed model discovery, keeping previous model list");
   }
 
+  // 发现防抖：并发调用合并为一次 inflight，避免重复发起
+  let discoveryInflight: Promise<void> | null = null;
+  function runDiscovery(): Promise<void> {
+    if (discoveryInflight) return discoveryInflight;
+    discoveryInflight = discoverWithFailover().finally(() => { discoveryInflight = null; });
+    return discoveryInflight;
+  }
+
   function register(models: typeof registeredModels) {
     pi.registerProvider(PROVIDER_ID, {
       name: "CodeBuddy",
@@ -220,7 +228,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
           if (placed.created) logger.info(`codebuddy: logged in as new account ${placed.id} (userId=${loginUserId ?? "unknown"})`);
           else logger.info(`codebuddy: login refreshed account ${placed.id}`);
           // 登录后立即发现模型并重注册（Pi 的 credential-change refresh 走 allowNetwork:false，不触发网络发现）
-          void discoverWithFailover();
+          void runDiscovery();
           return cred;
         },
         async refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
@@ -243,7 +251,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
         },
       },
       refreshModels: async (context: { credential?: { type?: string; access?: string }; allowNetwork?: boolean; signal?: AbortSignal }) => {
-        // Pi 允许网络时按凭据发现；登录后的 credential-change 刷新 allowNetwork=false，走 fallback
+        // 1) Pi 允许网络 → 优先用凭据 access 发现（保持原有语义）
         const cred = context.credential?.type === "oauth" ? context.credential : undefined;
         if (cred?.access && context.allowNetwork) {
           try {
@@ -251,8 +259,13 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
             const models = modelsFromRemote(remote);
             if (models.length) return models as any;
           } catch (e) {
-            logger.warn(`model discovery failed: ${(e as Error).message}`);
+            logger.warn(`model discovery failed via credential: ${(e as Error).message}`);
           }
+        }
+        // 2) 凭据发现不可用/失败 → 用账号池补一次发现，避免把 fallback [auto] 当作模型列表返回，
+        //    否则 omp 在启动解析 config 模型引用时（如 default: codebuddy/hy4-preview）会拿到 auto-only 列表并覆盖
+        if (pool.size() > 0) {
+          await runDiscovery();
         }
         return registeredModels as any;
       },
@@ -288,7 +301,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
     if (ctx.ui?.input) { try { name = await ctx.ui.input("账号名称（可留空）", { defaultValue: "" }); } catch {} }
     const rec = await pool.append(cred, name || undefined);
     ctx.ui?.notify?.(`已添加 codebuddy 账号 ${rec.name} (${rec.id})`, "success");
-    void discoverWithFailover();
+    void runDiscovery();
   }
   pi.registerCommand("codebuddy-accounts", {
     description: "管理 CodeBuddy 多账号（list / add / strategy / remove <id>）",
@@ -338,7 +351,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   // 启动时已有账号 → 后台发现真实模型列表（不阻塞启动）
   const mode = pickAuthMode(cfg, credToAuthState(syncSnapshot.value));
   if (mode === "oauth" && pool.size() > 0) {
-    void discoverWithFailover();
+    void runDiscovery();
   } else if (mode === "api" && !cfg.apiKey) {
     logger.warn("api key mode requested but no key found — set CODEBUDDY_API_KEY");
   }
