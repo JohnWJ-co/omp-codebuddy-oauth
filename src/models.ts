@@ -52,7 +52,7 @@ export async function fetchRemoteModels(
   const modelMap = new Map(allModels.map((m) => [m.id, m]));
   const craftAgent = (body.data.agents || []).find((a) => a.name === AGENT_INTENT);
   const craftIds = craftAgent?.models || [];
-  if (craftIds.length === 0) return [DEFAULT_MODEL];
+  if (craftIds.length === 0) return [];
   return craftIds
     .map((id) => modelMap.get(id))
     .filter((m): m is RemoteModel => m !== undefined && m.supportsToolCall !== false);
@@ -144,8 +144,9 @@ export class DiscoveryCache {
     if (this.inflight) return this.inflight;
     this.inflight = this.fetchFn(token, signal).then(d => { this.data = d; this.fetchedAt = Date.now(); return d; }).catch(e => {
       if ((e as any)?.status === 401 || (e as any)?.status === 403) throw e;
-      if (!this.data) { this.data = [DEFAULT_MODEL]; this.fetchedAt = now; return this.data; }
-      return this.data;
+      // 失败不降级：有旧数据则沿用旧列表；无旧数据则抛出，由调用方换账号或保留现状
+      if (this.data) return this.data;
+      throw e;
     }).finally(() => { this.inflight = null; });
     if (this.data) { this.inflight.catch(() => {}); return this.data; }
     return this.inflight;

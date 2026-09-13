@@ -168,7 +168,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
       try {
         const remote = await discoveryCache.get(pick.auth.access, { signal: undefined });
         const models = modelsFromRemote(remote);
-        if (!models.length) { logger.warn(`model discovery empty via ${pick.id}`); return; }
+        if (!models.length) { logger.warn(`model discovery empty via ${pick.id}, try next account`); continue; }
         registeredModels = models;
         try {
           register(models);
@@ -182,10 +182,12 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
         const status = (e as any)?.status;
         if (status === 429) { logger.warn(`model discovery 429 on ${pick.id}, cooldown`); await pool.markCooldown(pick.id); continue; }
         if (status === 401 || status === 403) { logger.warn(`model discovery 401/403 on ${pick.id}, invalid`); await pool.markInvalid(pick.id, "discovery auth rejected"); continue; }
+        // 非 401/403 的失败（5xx/超时/网络）也换下一账号重试，全部失败才保留现状
         logger.warn(`model discovery failed via ${pick.id}: ${(e as Error).message}${(e as any)?.status ? ` (status=${(e as any).status})` : ""}`);
-        return;
+        continue;
       }
     }
+    logger.warn("all accounts failed model discovery, keeping previous model list");
   }
 
   function register(models: typeof registeredModels) {
