@@ -251,13 +251,17 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
         },
       },
       refreshModels: async (context: { credential?: { type?: string; access?: string }; allowNetwork?: boolean; signal?: AbortSignal }) => {
+        logger.info(`refreshModels called: allowNetwork=${String(context.allowNetwork)} credType=${context.credential?.type} poolSize=${pool.size()} registered=${registeredModels.length}`);
         // 1) Pi 允许网络 → 优先用凭据 access 发现（保持原有语义）
         const cred = context.credential?.type === "oauth" ? context.credential : undefined;
         if (cred?.access && context.allowNetwork) {
           try {
             const remote = await discoveryCache.get(cred.access, { signal: context.signal });
             const models = modelsFromRemote(remote);
-            if (models.length) return models as any;
+            if (models.length) {
+              logger.info(`refreshModels -> credential discovery: ${models.length} models`);
+              return models as any;
+            }
           } catch (e) {
             logger.warn(`model discovery failed via credential: ${(e as Error).message}`);
           }
@@ -267,6 +271,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
         if (pool.size() > 0) {
           await runDiscovery();
         }
+        logger.info(`refreshModels -> returning registeredModels: ${registeredModels.length} models`);
         return registeredModels as any;
       },
     } as any);
