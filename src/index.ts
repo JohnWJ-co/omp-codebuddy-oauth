@@ -46,6 +46,25 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   const snapshotPath = join(homedir(), CONFIG_DIR_NAME || ".pi", "agent", "codebuddy-auth.json");
   const syncSnapshot: { value: OAuthCredentials | undefined } = { value: undefined };
 
+  // --- 模型列表持久化兜底：一旦发现成功即存盘，启动/刷新优先用上次成功的列表 ---
+  // 彻底杜绝「发现失败 → fallback [auto] 泄漏 → /models 只剩 auto」：只要历史上成功过，
+  // provider 注册与 refreshModels 都从快照起步，任何时刻都不会退化成 auto-only。
+  const modelsSnapshotPath = join(homedir(), CONFIG_DIR_NAME || ".pi", "agent", "codebuddy-models.json");
+  async function loadModelsSnapshot(): Promise<any[]> {
+    try {
+      const raw = await fs.readFile(modelsSnapshotPath, "utf8");
+      const arr = JSON.parse(raw) as RemoteModel[];
+      if (Array.isArray(arr) && arr.length > 0) return arr;
+    } catch { /* 无快照或损坏 → 空 */ }
+    return [];
+  }
+  async function saveModelsSnapshot(models: any[]): Promise<void> {
+    try {
+      await fs.mkdir(dirname(modelsSnapshotPath), { recursive: true });
+      await fs.writeFile(modelsSnapshotPath, JSON.stringify(models, null, 2), { mode: 0o600 } as any);
+    } catch { /* 快照写失败不影响主流程 */ }
+  }
+
   async function loadSnapshot(): Promise<void> {
     try {
       const raw = await fs.readFile(snapshotPath, "utf8");
@@ -150,8 +169,10 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   function modelsFromRemote(remote: RemoteModel[]) {
     return remote.map(remoteModelToPi);
   }
+  const bootModels = await loadModelsSnapshot();
   function fallbackModels() {
-    return modelsFromRemote([DEFAULT_MODEL]);
+    // 兜底顺序：上次成功发现的快照 > 单 auto。保证启动注册与 refreshModels 绝不从空列表/未知状态开始。
+    return bootModels.length > 0 ? bootModels : modelsFromRemote([DEFAULT_MODEL]);
   }
   let registeredModels = fallbackModels();
 
@@ -170,6 +191,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
         const models = modelsFromRemote(remote);
         if (!models.length) { logger.warn(`model discovery empty via ${pick.id}, try next account`); continue; }
         registeredModels = models;
+        void saveModelsSnapshot(models);
         try {
           register(models);
         } catch (regErr) {
