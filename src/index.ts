@@ -305,6 +305,22 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   }
   pi.registerCommand("codebuddy-accounts", {
     description: "管理 CodeBuddy 多账号（list / add / strategy / remove <id>）",
+    getArgumentCompletions: (prefix: string) => {
+      const trimmed = prefix.trim();
+      const mStrategy = trimmed.match(/^strategy\s+(.*)$/);
+      if (mStrategy) {
+        const items = ["failover", "round-robin"].map((v) => ({ value: v, label: v === "failover" ? "故障转移（仅 429/401 切换）" : "轮转（请求间均衡）" }));
+        return items.filter((i) => i.value.startsWith(mStrategy[1] || ""));
+      }
+      const mRemove = trimmed.match(/^remove\s+(.*)$/);
+      if (mRemove) {
+        const items = pool.list().map((a) => ({ value: `${a.id}`, label: `${a.id}  ${a.name}  ${a.status === "ok" ? "正常" : a.status === "cooldown" ? "冷却中" : "认证失效"}` }));
+        return items.filter((i) => i.value.startsWith(mRemove[1] || ""));
+      }
+      const items = ["list", "add", "strategy", "remove"].map((v) => ({ value: v, label: v }));
+      const filtered = items.filter((i) => i.value.startsWith(trimmed));
+      return filtered.length > 0 ? filtered : null;
+    },
     handler: async (args: string, ctx: any) => {
       const argv = args.trim().split(/\s+/).filter(Boolean);
       const cmd = argv[0] ?? "list";
