@@ -46,24 +46,7 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   const snapshotPath = join(homedir(), CONFIG_DIR_NAME || ".pi", "agent", "codebuddy-auth.json");
   const syncSnapshot: { value: OAuthCredentials | undefined } = { value: undefined };
 
-  // --- 模型列表持久化兜底：一旦发现成功即存盘，启动/刷新优先用上次成功的列表 ---
-  // 彻底杜绝「发现失败 → fallback [auto] 泄漏 → /models 只剩 auto」：只要历史上成功过，
-  // provider 注册与 refreshModels 都从快照起步，任何时刻都不会退化成 auto-only。
-  const modelsSnapshotPath = join(homedir(), CONFIG_DIR_NAME || ".pi", "agent", "codebuddy-models.json");
-  async function loadModelsSnapshot(): Promise<any[]> {
-    try {
-      const raw = await fs.readFile(modelsSnapshotPath, "utf8");
-      const arr = JSON.parse(raw) as RemoteModel[];
-      if (Array.isArray(arr) && arr.length > 0) return arr;
-    } catch { /* 无快照或损坏 → 空 */ }
-    return [];
-  }
-  async function saveModelsSnapshot(models: any[]): Promise<void> {
-    try {
-      await fs.mkdir(dirname(modelsSnapshotPath), { recursive: true });
-      await fs.writeFile(modelsSnapshotPath, JSON.stringify(models, null, 2), { mode: 0o600 } as any);
-    } catch { /* 快照写失败不影响主流程 */ }
-  }
+
 
   async function loadSnapshot(): Promise<void> {
     try {
@@ -169,12 +152,9 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
   function modelsFromRemote(remote: RemoteModel[]) {
     return remote.map(remoteModelToPi);
   }
-  const bootModels = await loadModelsSnapshot();
-  function fallbackModels() {
-    // 兜底顺序：上次成功发现的快照 > 单 auto。保证启动注册与 refreshModels 绝不从空列表/未知状态开始。
-    return bootModels.length > 0 ? bootModels : modelsFromRemote([DEFAULT_MODEL]);
-  }
-  let registeredModels = fallbackModels();
+  // 模型列表由 fetchDynamicModels 动态发现驱动（omp 每次 refresh 拉最新 + SQLite 缓存兜底），
+  // 不在这里预置静态列表（静态 overlay 会在 refresh 重跑发现时被 touched 清空 → 列表塌缩成 auto）。
+  let registeredModels: any[] = [];
 
   // 主动发现 + 重注册（registerProvider 可随时调用并立即生效）；多账号时 429/401 顺延切换
   async function discoverWithFailover(): Promise<void> {
@@ -190,14 +170,9 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
         const remote = await discoveryCache.get(pick.auth.access, { signal: undefined });
         const models = modelsFromRemote(remote);
         if (!models.length) { logger.warn(`model discovery empty via ${pick.id}, try next account`); continue; }
+        // 注册由 omp 的 refreshRuntimeProviders 驱动（fetchDynamicModels），
+        // 这里仅缓存最近成功列表供 refreshModels 返回。
         registeredModels = models;
-        void saveModelsSnapshot(models);
-        try {
-          register(models);
-        } catch (regErr) {
-          logger.error(`registerProvider failed: ${(regErr as Error).message}`);
-          return;
-        }
         logger.info(`model discovery ok via ${pick.id}: ${models.length} models registered`);
         return;
       } catch (e) {
@@ -220,7 +195,41 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
     return discoveryInflight;
   }
 
-  function register(models: typeof registeredModels) {
+  // 动态发现核心：有 apiKey 用它直连发现；无则走账号池 failover；
+  // 全部失败抛错 → omp 用 SQLite 缓存兜底（保留上次成功列表，绝不塌缩成 auto）。
+  async function discoverForDynamic(apiKey: string | undefined): Promise<any> {
+    const toModelDefs = (models: any[]): any[] => models.map((m) => ({ ...m, compat: CODEBUDDY_COMPAT }));
+    if (apiKey) {
+      const remote = await discoveryCache.get(apiKey, { signal: undefined });
+      const models = modelsFromRemote(remote);
+      if (models.length > 0) {
+        logger.info(`dynamic discovery ok via credential: ${models.length} models`);
+        return toModelDefs(models);
+      }
+    }
+    const tried = new Set<string>();
+    for (let i = 0; i < Math.max(pool.size(), 1); i++) {
+      const pick = pool.next(tried);
+      if (!pick) break;
+      tried.add(pick.id);
+      try {
+        const remote = await discoveryCache.get(pick.auth.access, { signal: undefined });
+        const models = modelsFromRemote(remote);
+        if (models.length > 0) {
+          logger.info(`dynamic discovery ok via ${pick.id}: ${models.length} models`);
+          return toModelDefs(models);
+        }
+      } catch (e) {
+        const status = (e as any)?.status;
+        if (status === 429) { await pool.markCooldown(pick.id); continue; }
+        if (status === 401 || status === 403) { await pool.markInvalid(pick.id, "discovery auth rejected"); continue; }
+        continue;
+      }
+    }
+    throw new Error("codebuddy: no account could provide model list");
+  }
+
+  function register() {
     pi.registerProvider(PROVIDER_ID, {
       name: "CodeBuddy",
       baseUrl: `${server.url}/v2`,
@@ -228,7 +237,11 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
       // 认证统一由 auth-fetch 拦截器注入（oauth 双头身份 + api 双头 key）；
       // apiKey 仅作为 OpenAI client 的占位（拦截器会覆写 Authorization）
       apiKey: cfg.apiKey || "not-used",
-      models: models.map((m) => ({ ...m, compat: CODEBUDDY_COMPAT })) as any,
+      // 动态发现：omp 每次 refresh 拉最新模型列表（成功即更新，失败由 SQLite 缓存兜底），
+      // 不再传静态 models overlay——静态 overlay 会在 refresh 重跑发现时被清空 → 列表塌缩成 auto。
+      fetchDynamicModels: async (apiKey: string | undefined) => {
+        return await discoverForDynamic(apiKey);
+      },
       streamSimple,
       oauth: {
         name: "CodeBuddy (IOA)",
@@ -299,7 +312,6 @@ export default async function codebuddyExtension(pi: ExtensionAPI) {
     } as any);
   }
 
-  register(registeredModels);
 
   // --- 多账号管理命令：/codebuddy-accounts（list / add / remove <id>）---
   // omp 命令 handler 返回 void：文本输出走 ui.notify（无 UI 时降级 logger）
